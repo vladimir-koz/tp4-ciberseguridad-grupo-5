@@ -1,5 +1,6 @@
 import path from 'path';
 import express from 'express';
+import helmet from 'helmet';
 
 import config from './config';
 import { rutaNoEncontrada, manejadorErrores } from './middleware/errores';
@@ -13,15 +14,37 @@ import debugRoutes from './routes/debug.routes';
 
 const app = express();
 
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      baseUri: ["'none'"],
+      scriptSrc: ["'self'"],
+      scriptSrcAttr: ["'none'"],
+      styleSrc: ["'self'"],
+      styleSrcAttr: ["'none'"],
+      imgSrc: ["'self'", 'data:'],
+      fontSrc: ["'self'"],
+      connectSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      frameSrc: ["'none'"],
+      frameAncestors: ["'none'"],
+      formAction: ["'self'"],
+      upgradeInsecureRequests: config.nodeEnv === 'production' ? [] : null,
+    },
+  },
+  hsts: config.nodeEnv === 'production' ? { maxAge: 31536000, includeSubDomains: false } : false,
+  frameguard: { action: 'deny' },
+  referrerPolicy: { policy: 'no-referrer' },
+}));
+
 /**
  * FALLA — Ajustes de configuración (OWASP A05:2021)
  *
  * Faltan:
- *  - helmet (cabeceras de seguridad: CSP, X-Content-Type-Options, HSTS...)
  *  - límite de tamaño del cuerpo más estricto por ruta
  *  - rate limiting global
  *  - política de CORS restringida al propio origen
- *  - helmet CSP además sirve como capa extra frente al XSS
  */
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
