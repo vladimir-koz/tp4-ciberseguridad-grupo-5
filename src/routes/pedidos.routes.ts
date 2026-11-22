@@ -11,16 +11,16 @@ const router = express.Router();
  *  - CSRF: no hay token anti-CSRF ni verificación de Origin/Referer, y la
  *    cookie de sesión no tiene SameSite. Una página externa puede POSTear
  *    con las cookies de la víctima.
- *  - Validación de entrada débil: no se valida tipo, rango ni longitud de
- *    `cantidad`, `mesa`, `cliente` ni de la lista de items.
  *  - No requiere autenticación ni rol.
  */
 router.post('/', async (req, res, next) => {
   try {
-    const { mesa, cliente, items } = req.body || {};
-    const pedido = await pedidos.crear({ mesa, cliente, items });
+    const pedido = await pedidos.crear(req.body);
     res.status(201).json(pedido);
   } catch (err) {
+    if (err instanceof pedidos.ErrorValidacionPedido) {
+      return res.status(400).json({ error: err.message });
+    }
     next(err);
   }
 });
@@ -29,14 +29,16 @@ router.post('/', async (req, res, next) => {
  * GET /api/pedidos?mesa=
  * Lista los pedidos de todas las mesas.
  *
- * FALLA — Inyección SQL en el filtro de mesa.
  * FALLA — Autorización: cualquier visitante puede ver los pedidos de TODAS
  * las mesas (los datos de los clientes de los demás).
  */
 router.get('/', async (req, res, next) => {
   try {
-    res.json({ pedidos: await pedidos.listar(req.query.mesa as string | undefined) });
+    res.json({ pedidos: await pedidos.listar(req.query.mesa) });
   } catch (err) {
+    if (err instanceof pedidos.ErrorValidacionPedido) {
+      return res.status(400).json({ error: err.message });
+    }
     next(err);
   }
 });
