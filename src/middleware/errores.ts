@@ -1,14 +1,4 @@
-/**
- * Manejo de errores.
- *
- * FALLA — Exposición de información sensible:
- * la respuesta al cliente incluye el mensaje de error original y el stack
- * trace completo, que revela rutas internas del servidor, nombres de tablas,
- * fragmentos de consultas SQL y versiones de librerías.
- *
- * Corrección: responder con un mensaje genérico ("Error interno") y registrar
- * el detalle real en el log del servidor.
- */
+/** Manejo de errores: detalles en el servidor y respuestas genéricas al cliente. */
 
 import type { NextFunction, Request, Response } from 'express';
 
@@ -20,13 +10,22 @@ export function rutaNoEncontrada(req: Request, res: Response): void {
 
 // Express reconoce al manejador de errores por sus CUATRO parámetros: `next`
 // tiene que estar aunque no se use.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-export function manejadorErrores(err: ErrorHttp, req: Request, res: Response, next: NextFunction): void {
-  console.error('[error]', err.message);
+export function manejadorErrores(
+  err: ErrorHttp & { statusCode?: number }, req: Request, res: Response, next: NextFunction
+): void {
+  console.error('[error]', err.stack || err.message);
 
-  // FALLA: se filtra el stack trace al cliente.
-  res.status(err.status || 500).json({
-    error: err.message,
-    stack: err.stack,
+  if (res.headersSent) {
+    next(err);
+    return;
+  }
+
+  const codigo = err.status ?? err.statusCode;
+  const status = typeof codigo === 'number' && Number.isInteger(codigo) && codigo >= 400 && codigo <= 599
+    ? codigo
+    : 500;
+
+  res.status(status).json({
+    error: status >= 500 ? 'Error interno del servidor.' : 'No se pudo procesar la solicitud.',
   });
 }
