@@ -50,7 +50,22 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // Archivos subidos por el panel de administración.
-app.use('/uploads', express.static(config.uploadsDir));
+// Sólo se sirven imágenes (aunque en la carpeta haya quedado otra cosa) y con
+// una CSP "sandbox": si algún contenido activo llegara a colarse, el navegador
+// no lo ejecuta en el origen del sitio.
+const IMAGENES_SERVIBLES = /^\/[A-Za-z0-9-]+\.(png|jpe?g|webp)$/i;
+app.use(
+  '/uploads',
+  (req, res, next) => {
+    if (!IMAGENES_SERVIBLES.test(req.path)) {
+      res.status(404).json({ error: 'Archivo no encontrado.' });
+      return;
+    }
+    res.set('Content-Security-Policy', "default-src 'none'; img-src 'self'; sandbox");
+    next();
+  },
+  express.static(config.uploadsDir, { index: false, dotfiles: 'deny', redirect: false })
+);
 
 // Sitio web estático
 app.use(express.static(path.join(__dirname, 'public')));

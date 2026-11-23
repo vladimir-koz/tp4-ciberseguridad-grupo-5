@@ -1,4 +1,5 @@
 import express from 'express';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { execFile } from 'child_process';
@@ -254,41 +255,124 @@ router.post('/probar-conexion', (req, res) => {
   );
 });
 
+/** Tipos de imagen admitidos. */
+type TipoImagen = 'png' | 'jpeg' | 'webp';
+
+/**
+ * Lista blanca de extensiones → tipo de imagen esperado.
+ * No se admite SVG (es XML y puede llevar <script>) ni HTML.
+ */
+const EXTENSIONES_PERMITIDAS: Readonly<Record<string, TipoImagen>> = {
+  '.png': 'png',
+  '.jpg': 'jpeg',
+  '.jpeg': 'jpeg',
+  '.webp': 'webp',
+};
+
+/** Extensión con la que se guarda cada tipo (la decide el servidor). */
+const EXTENSION_DE_TIPO: Readonly<Record<TipoImagen, string>> = {
+  png: '.png',
+  jpeg: '.jpg',
+  webp: '.webp',
+};
+
+/** MIME real de cada tipo (para informar en la respuesta). */
+const MIME_DE_TIPO: Readonly<Record<TipoImagen, string>> = {
+  png: 'image/png',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+};
+
+/**
+ * Tamaño máximo del archivo YA decodificado. El cuerpo JSON global de la app
+ * está limitado a 1 MB y el base64 agrega ~33 %, así que 512 KB entra holgado.
+ */
+const TAMANO_MAX = 512 * 1024;
+const TAMANO_MAX_BASE64 = Math.ceil(TAMANO_MAX / 3) * 4;
+const LONGITUD_MAX_NOMBRE = 255;
+const FORMATO_BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
+
+/**
+ * Detecta el tipo REAL del archivo por su firma (magic number), sin confiar
+ * en la extensión ni en el MIME que declara el cliente.
+ */
+function detectarTipoImagen(buffer: Buffer): TipoImagen | null {
+  const PNG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  if (buffer.length >= 8 && PNG.every((byte, i) => buffer[i] === byte)) return 'png';
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'jpeg';
+  if (
+    buffer.length >= 12 &&
+    buffer.toString('ascii', 0, 4) === 'RIFF' &&
+    buffer.toString('ascii', 8, 12) === 'WEBP'
+  ) {
+    return 'webp';
+  }
+  return null;
+}
+
 /**
  * POST /api/admin/subir-archivo
  *
- * -----------------------------------------------------------------------------
- * FALLA — Carga de archivos sin restricciones (OWASP A04:2021)
- * -----------------------------------------------------------------------------
- * No se valida la extensión, el tipo MIME ni el tamaño del archivo, y se
- * guarda con el nombre que manda el cliente (además sin sanitizar "../", lo
- * que permite escribir fuera de la carpeta de subidas). Los archivos subidos
- * se sirven con express.static desde el mismo origen.
- *
- * Corrección: validar extensión contra lista blanca (.png/.jpg/.svg saneado),
- * verificar el tipo MIME real, limitar el tamaño, generar un nombre aleatorio
- * y guardar fuera del árbol web.
- * -----------------------------------------------------------------------------
+ * Carga de archivos (OWASP A04:2021). Defensas:
+ *  1. Extensión validada contra una lista blanca (sólo imágenes, sin SVG).
+ *  2. Contenido validado por su firma (magic number): un .html renombrado a
+ *     .png se rechaza, y la firma tiene que coincidir con la extensión.
+ *  3. Tamaño máximo (TAMANO_MAX) controlado antes de escribir en disco.
+ *  4. El nombre lo genera el servidor (UUID + extensión del tipo detectado):
+ *     el nombre del cliente nunca llega al sistema de archivos, así que no
+ *     hay path traversal ni sobrescritura de archivos existentes.
+ *  5. Al servir /uploads (app.ts) sólo se entregan imágenes, con una CSP
+ *     "sandbox" que impide ejecutar contenido activo.
  */
-router.post('/subir-archivo', express.json({ limit: '8mb' }), (req, res, next) => {
+router.post('/subir-archivo', (req, res, next) => {
   try {
     const { nombre, contenidoBase64 } = req.body || {};
 
-    if (!nombre || !contenidoBase64) {
+    if (typeof nombre !== 'string' || typeof contenidoBase64 !== 'string' || !nombre || !contenidoBase64) {
       return res.status(400).json({ error: 'Falta el archivo.' });
     }
+    if (nombre.length > LONGITUD_MAX_NOMBRE) {
+      return res.status(400).json({ error: 'El nombre del archivo es demasiado largo.' });
+    }
 
-    // FALLA: sin validación de extensión, MIME ni tamaño.
+    const tipoPorExtension = EXTENSIONES_PERMITIDAS[path.extname(nombre).toLowerCase()];
+    if (!tipoPorExtension) {
+      return res.status(400).json({ error: 'Tipo de archivo no permitido. Sólo se aceptan imágenes PNG, JPG o WEBP.' });
+    }
+
+    if (contenidoBase64.length > TAMANO_MAX_BASE64) {
+      return res.status(413).json({ error: 'El archivo supera el tamaño máximo de 512 KB.' });
+    }
+    if (contenidoBase64.length % 4 !== 0 || !FORMATO_BASE64.test(contenidoBase64)) {
+      return res.status(400).json({ error: 'El contenido del archivo no es válido.' });
+    }
+
     const buffer = Buffer.from(contenidoBase64, 'base64');
-    fs.mkdirSync(config.uploadsDir, { recursive: true });
+    if (buffer.length === 0 || buffer.length > TAMANO_MAX) {
+      return res.status(413).json({ error: 'El archivo supera el tamaño máximo de 512 KB.' });
+    }
 
-    // FALLA: nombre tomado del cliente sin sanear (path traversal).
-    const destino = path.join(config.uploadsDir, nombre);
-    fs.writeFileSync(destino, buffer);
+    const tipoReal = detectarTipoImagen(buffer);
+    if (!tipoReal || tipoReal !== tipoPorExtension) {
+      return res.status(400).json({ error: 'El contenido del archivo no corresponde a una imagen permitida.' });
+    }
 
-    res.json({
+    // Nombre generado por el servidor; se comprueba igual que quede dentro
+    // de la carpeta de subidas (defensa en profundidad).
+    const carpeta = path.resolve(config.uploadsDir);
+    const nombreSeguro = `${crypto.randomUUID()}${EXTENSION_DE_TIPO[tipoReal]}`;
+    const destino = path.resolve(carpeta, nombreSeguro);
+    if (path.dirname(destino) !== carpeta) {
+      return res.status(400).json({ error: 'Destino de archivo no válido.' });
+    }
+
+    fs.mkdirSync(carpeta, { recursive: true });
+    fs.writeFileSync(destino, buffer, { flag: 'wx', mode: 0o644 });
+
+    res.status(201).json({
       mensaje: 'Archivo subido.',
-      url: `/uploads/${nombre}`,
+      url: `/uploads/${nombreSeguro}`,
+      tipo: MIME_DE_TIPO[tipoReal],
       bytes: buffer.length,
     });
   } catch (err) {
