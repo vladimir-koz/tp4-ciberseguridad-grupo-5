@@ -11,22 +11,19 @@
 # Levantar:   docker compose up -d --build
 # Ver logs:    docker compose logs -f app
 # Bajar todo: docker compose down
-# Resetear:   docker compose down -v   (borra el volumen de la base)
 # =============================================================================
 
 services:
   db:
     image: postgres:16-alpine
-    container_name: origen_db
     restart: unless-stopped
     environment:
       POSTGRES_DB: origen
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      # VULNERABILIDAD (configuración): se usa una contraseña trivial y la base
-      # de datos acepta conexiones desde cualquier origen ("trust"), sin
-      # contraseña ni cifrado. Corregir → md5/scram-sha-256 + contraseña robusta.
-      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Defini POSTGRES_PASSWORD fuera del repositorio}"
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=scram-sha-256"
+      DB_PASSWORD: "${DB_PASSWORD:?Defini DB_PASSWORD fuera del repositorio}"
     volumes:
       - datos_origen:/var/lib/postgresql/data
       - ./docker/initdb:/docker-entrypoint-initdb.d:ro
@@ -42,7 +39,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: origen_app
     restart: unless-stopped
     depends_on:
       db:
@@ -53,12 +49,8 @@ services:
       DB_HOST: db
       DB_PORT: 5432
       DB_NAME: origen
-      # VULNERABILIDAD (mínimos privilegios): la aplicación se conecta con el
-      # superusuario `postgres`. Corregir → usar el usuario `origen_app` que
-      # sólo tiene permisos sobre las tablas del catálogo (ver
-      # docker/initdb/02-usuario-aplicacion.sql).
-      DB_USER: postgres
-      DB_PASSWORD: postgres
+      DB_USER: origen_app
+      DB_PASSWORD: "${DB_PASSWORD:?Defini DB_PASSWORD fuera del repositorio}"
       UPLOADS_DIR: /app/uploads
       # Puerto publicado en el host, sólo para los mensajes de arranque.
       APP_PORT: "${APP_PORT:-8080}"
@@ -85,15 +77,4 @@ volumes:
 
 networks:
   red_origen:
-    name: red_origen
     driver: bridge
-    # Subred explícita: los contenedores de esta app quedan en 10.89.0.0/24
-    # (puertos 10.89.0.x) y se comunican por nombre.
-    # Si en tu máquina esa subred ya está usada, cambiala por otra libre
-    # (por ejemplo 10.90.0.0/24) o borrá estas dos líneas para que Docker
-    # elija una automáticamente.
-    ipam:
-      driver: default
-      config:
-        - subnet: 10.89.0.0/24
-          gateway: 10.89.0.1

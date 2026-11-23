@@ -16,10 +16,48 @@ que los alumnos tienen que encontrar, observar, explicar y corregir.
 
 Requisitos: **Docker Desktop** (o Docker Engine + Compose v2).
 
+Para una **primera instalación con una base nueva**, prepará las credenciales
+locales antes de levantar los contenedores:
+
 ```bash
 cd cafeteria-origen
-docker compose up -d --build
+cp .env.example .env
 ```
+
+En PowerShell, usá `Copy-Item .env.example .env` en lugar de `cp`.
+
+Generá **dos contraseñas aleatorias diferentes**, por ejemplo con un gestor de
+contraseñas o ejecutando `openssl rand -hex 32` una vez por contraseña.
+Completá en `.env` los campos vacíos:
+
+- `POSTGRES_PASSWORD`: contraseña del administrador de PostgreSQL (`postgres`).
+- `DB_PASSWORD`: contraseña del usuario de aplicación (`origen_app`).
+
+Conservá `DB_USER=origen_app`: la app no debe usar el superusuario. No dejes
+contraseñas vacías ni publiques `.env`; está ignorado por Git y excluido del
+contexto de construcción Docker. En Linux/macOS podés restringir sus permisos
+con `chmod 600 .env`.
+
+Desde ese mismo directorio, Compose lee `.env` y pasa las credenciales a los
+servicios correspondientes:
+
+```bash
+docker compose config -q
+docker compose up -d --build --wait
+```
+
+`config -q` valida sin mostrar las contraseñas; `--wait` espera a que los
+servicios estén saludables. Las contraseñas faltantes o vacías impiden el
+arranque intencionalmente.
+
+Si preferís guardar el archivo fuera del repositorio, usá
+`docker compose --env-file /ruta/privada/origen.env ...` y repetí ese argumento
+en **todos** los comandos Compose, incluidos los de evaluación.
+
+**Si ya existe un volumen con datos**, cambiar `.env` no actualiza contraseñas,
+roles ni reglas de autenticación de PostgreSQL. No borres el volumen para
+aplicar esta corrección: coordiná la actualización de roles, contraseñas y
+`pg_hba.conf` antes de recrear los servicios con la nueva configuración.
 
 | Qué | Dónde |
 |---|---|
@@ -39,7 +77,6 @@ docker compose ps              # estado de los contenedores
 docker compose logs -f app     # logs de la aplicación
 docker compose restart app     # reiniciar tras editar código
 docker compose down            # bajar los contenedores
-docker compose down -v         # bajar TODO y borrar la base (volumen)
 ```
 
 ### Editar código
@@ -61,11 +98,19 @@ Hay **dos baterías**, y conviene entender la diferencia:
 | `npm run test:seguridad` | **Seguridad**: comprueba que las fallas estén corregidas | ✘ en rojo | ✔ en verde |
 | `npm run test:todo` | Las dos juntas | — | — |
 
+Los **tres comandos de evaluación**, desde el directorio del proyecto y con
+`.env` configurado, son:
+
 ```bash
 docker compose exec app npm test              # tests funcionales
 docker compose exec app npm run test:seguridad # batería de seguridad
-docker compose exec app npm run test:todo      # todo junto
+docker compose exec app npm run check:security # checklist estático
 ```
+
+Opcionalmente, `docker compose exec app npm run test:todo` ejecuta ambas
+baterías. Los comandos de seguridad y checklist pueden devolver código 1
+mientras queden vulnerabilidades de otras tareas; eso no implica un fallo de
+conexión ni autoriza a debilitar PostgreSQL.
 
 > **La batería funcional** describe el comportamiento del negocio. Debe quedar
 > **en verde antes de las correcciones y en verde después** (los helpers ya
@@ -106,7 +151,7 @@ Las contraseñas están en **texto plano** en la base (falla intencional).
 
 ```
 cafeteria-origen/
-├── docker-compose.yml          # app + base de datos, red propia (10.89.0.0/24)
+├── docker-compose.yml          # app + base de datos, red propia por proyecto
 ├── Dockerfile
 ├── tsconfig.json               # configuración de TypeScript
 ├── docker/initdb/              # esquema SQL + usuario de mínimos privilegios
