@@ -8,19 +8,16 @@ const router = express.Router();
  * GET /api/productos?tipo=&variedad=&q=
  * Lista el catálogo con filtros opcionales.
  *
- * FALLA — Inyección SQL: los filtros llegan concatenados al texto SQL
- * (ver services/catalogo.service.ts).
- *
- * FALLA — XSS reflejado: la respuesta incluye los filtros que mandó el
- * cliente y el sitio web los pinta con innerHTML. Un `<script>` en `q` se
- * ejecuta en el navegador de quien hizo la búsqueda.
+ * La respuesta incluye el eco de los filtros (`filtros.q`). Es dato no
+ * confiable: el sitio web lo muestra como texto (textContent), nunca como
+ * HTML, así que un `<script>` en la búsqueda no se ejecuta.
  */
 router.get('/', async (req, res, next) => {
   try {
     const productos = await catalogo.listar(req.query as FiltrosCatalogo);
     res.json({
       productos,
-      // Se devuelve el eco de los filtros: es el vector del XSS reflejado.
+      // Eco de los filtros: el cliente lo pinta como texto.
       filtros: {
         tipo: req.query.tipo || '',
         variedad: req.query.variedad || '',
@@ -42,20 +39,27 @@ router.get('/variedades', async (req, res, next) => {
   }
 });
 
+/** Máximo valor de una columna INTEGER / SERIAL de PostgreSQL. */
+const ID_MAXIMO = 2147483647;
+
 /**
  * GET /api/productos/:id
  * Devuelve un producto.
  *
- * FALLA — Inyección SQL en el id (el id se mete en la consulta entre comillas).
- * FALLA — XSS reflejado: el mensaje de error incluye el id recibido.
+ * El id se valida como entero positivo antes de consultar la base, y los
+ * mensajes de error son genéricos: nunca reflejan lo que mandó el cliente
+ * (evita el XSS reflejado a través de la respuesta).
  */
 router.get('/:id', async (req, res, next) => {
   try {
-    const producto = await catalogo.obtener(req.params.id);
+    const id = Number(req.params.id);
+    if (!/^\d+$/.test(req.params.id) || !Number.isInteger(id) || id <= 0 || id > ID_MAXIMO) {
+      return res.status(400).json({ error: 'El identificador de producto no es válido.' });
+    }
+
+    const producto = await catalogo.obtener(id);
     if (!producto) {
-      return res
-        .status(404)
-        .json({ error: `No existe el producto "${req.params.id}".` });
+      return res.status(404).json({ error: 'Producto no encontrado.' });
     }
     res.json(producto);
   } catch (err) {
