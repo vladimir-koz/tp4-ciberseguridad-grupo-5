@@ -7,33 +7,49 @@ import config from '../config';
 import * as catalogo from '../services/catalogo.service';
 import * as usuarios from '../services/usuarios.service';
 import { requiereSesion, requiereRol } from '../middleware/auth';
-import type { Usuario } from '../tipos';
+import type { Rol, Usuario } from '../tipos';
 
 const router = express.Router();
 
 /**
  * Rutas del panel de administración.
  *
- * -----------------------------------------------------------------------------
- * FALLA — Autorización ausente / escalada de privilegios (OWASP A01:2021)
- * -----------------------------------------------------------------------------
- * Se exige estar autenticado, pero NO se comprueba el rol: `requiereRol` está
- * importado y no se usa. Cualquier usuario autenticado (incluso con rol
- * "cliente") entra al panel y puede:
- *   - crear, editar y BORRAR productos,
- *   - cambiar contraseñas,
- *   - dar de alta usuarios y cambiarles el rol (escalada de privilegios),
- *   - ejecutar comandos en el servidor.
- *
- * Corrección: `router.use(requiereRol('admin'))` sobre las rutas sensibles.
- * -----------------------------------------------------------------------------
+ * Autorización (OWASP A01:2021): TODAS las rutas de este router exigen una
+ * sesión válida y el rol "admin". El control se aplica a nivel de router,
+ * antes del ruteo, así que también cubre cualquier ruta que se agregue después
+ * (y una ruta inexistente responde 401/403 en lugar de revelar un 404).
  */
-router.use(requiereSesion);
+router.use(requiereSesion, requiereRol('admin'));
+
+/** Roles que se pueden asignar (lista blanca). */
+const ROLES_PERMITIDOS: readonly Rol[] = ['admin', 'barista', 'mozo', 'cliente'];
+
+/** Máximo valor de una columna INTEGER / SERIAL de PostgreSQL. */
+const ID_MAXIMO = 2147483647;
+
+/** Formato de nombre de usuario admitido. */
+const FORMATO_USERNAME = /^[A-Za-z0-9._-]{3,30}$/;
+const LONGITUD_NOMBRE = { min: 2, max: 60 };
+
+/** Valida un id de la URL: entero positivo dentro del rango de la base. */
+function validarId(valor: string): number | null {
+  if (!/^\d+$/.test(valor)) return null;
+  const id = Number(valor);
+  if (!Number.isInteger(id) || id <= 0 || id > ID_MAXIMO) return null;
+  return id;
+}
+
+/** Datos de un usuario que se pueden mostrar: nunca la contraseña (ni su hash). */
+function usuarioPublico(usuario: Usuario) {
+  const { id, username, rol, nombre, creado_en } = usuario;
+  return { id, username, rol, nombre, creado_en };
+}
 
 /** GET /api/admin/usuarios */
 router.get('/usuarios', async (req, res, next) => {
   try {
-    res.json({ usuarios: await usuarios.listar() });
+    const lista = await usuarios.listar();
+    res.json({ usuarios: lista.map(usuarioPublico) });
   } catch (err) {
     next(err);
   }
@@ -42,25 +58,72 @@ router.get('/usuarios', async (req, res, next) => {
 /**
  * PUT /api/admin/usuarios/:id
  *
- * FALLA — Asignación masiva: se actualiza cualquier campo que llegue en el
- * cuerpo, incluido el `rol`. Un usuario con rol "cliente" puede mandarse
- * `{"rol": "admin"}` y convertirse en administrador.
+ * Escalada de privilegios: el cuerpo ya no se copia tal cual (asignación
+ * masiva). Sólo se aceptan `username`, `nombre` y `rol`, cada uno validado:
+ *  - el rol sólo lo cambia un admin y tiene que estar en la lista blanca,
+ *  - nadie puede cambiar su PROPIO rol (ni subirse ni bajarse por error),
+ *  - la contraseña no se modifica por esta ruta (tiene su propio flujo).
  */
 router.put('/usuarios/:id', async (req, res, next) => {
   try {
-    const { username, nombre, rol, password } = req.body || {};
-    const cambios: Partial<Usuario> = {};
-    if (username !== undefined) cambios.username = username;
-    if (nombre !== undefined) cambios.nombre = nombre;
-    if (rol !== undefined) cambios.rol = rol;
-    if (password !== undefined) cambios.password = password;
+    const id = validarId(req.params.id);
+    if (id === null) {
+      return res.status(400).json({ error: 'El identificador de usuario no es válido.' });
+    }
 
-    const usuario = await usuarios.actualizar(req.params.id, cambios);
+    const { username, nombre, rol, password } = req.body || {};
+    if (password !== undefined) {
+      return res.status(400).json({ error: 'La contraseña no se puede modificar desde esta operación.' });
+    }
+
+    const cambios: Partial<Usuario> = {};
+
+    if (username !== undefined) {
+      if (typeof username !== 'string' || !FORMATO_USERNAME.test(username)) {
+        return res.status(400).json({
+          error: 'El usuario debe tener entre 3 y 30 caracteres (letras, números, punto, guion o guion bajo).',
+        });
+      }
+      cambios.username = username;
+    }
+
+    if (nombre !== undefined) {
+      const limpio = typeof nombre === 'string' ? nombre.trim() : '';
+      if (limpio.length < LONGITUD_NOMBRE.min || limpio.length > LONGITUD_NOMBRE.max) {
+        return res.status(400).json({ error: 'El nombre debe tener entre 2 y 60 caracteres.' });
+      }
+      cambios.nombre = limpio;
+    }
+
+    if (rol !== undefined) {
+      // Defensa en profundidad: además del control del router, el cambio de
+      // rol se verifica explícitamente contra el rol de quien lo pide.
+      if (!req.usuario || req.usuario.rol !== 'admin') {
+        return res.status(403).json({ error: 'No tenés permisos para cambiar roles.' });
+      }
+      if (!ROLES_PERMITIDOS.includes(rol)) {
+        return res.status(400).json({ error: 'El rol indicado no es válido.' });
+      }
+      if (req.usuario.id === id && rol !== req.usuario.rol) {
+        return res.status(403).json({ error: 'No podés cambiar tu propio rol.' });
+      }
+      cambios.rol = rol;
+    }
+
+    if (Object.keys(cambios).length === 0) {
+      return res.status(400).json({ error: 'No hay cambios para aplicar.' });
+    }
+
+    const usuario = await usuarios.actualizar(id, cambios);
     if (!usuario) {
       return res.status(404).json({ error: 'Usuario no encontrado.' });
     }
-    res.json(usuario);
+    res.json(usuarioPublico(usuario));
   } catch (err) {
+    // El nombre de usuario es único en la base.
+    if ((err as { code?: string }).code === '23505') {
+      return res.status(409).json({ error: 'Ya existe un usuario con ese nombre.' });
+    }
     next(err);
   }
 });
@@ -82,7 +145,11 @@ router.post('/productos', async (req, res, next) => {
 /** PUT /api/admin/productos/:id */
 router.put('/productos/:id', async (req, res, next) => {
   try {
-    const producto = await catalogo.actualizar(req.params.id, req.body || {});
+    const id = validarId(req.params.id);
+    if (id === null) {
+      return res.status(400).json({ error: 'El identificador de producto no es válido.' });
+    }
+    const producto = await catalogo.actualizar(id, req.body || {});
     if (!producto) {
       return res.status(404).json({ error: 'Producto no encontrado.' });
     }
@@ -100,7 +167,11 @@ router.put('/productos/:id', async (req, res, next) => {
  */
 router.delete('/productos/:id', async (req, res, next) => {
   try {
-    const producto = await catalogo.eliminar(req.params.id);
+    const id = validarId(req.params.id);
+    if (id === null) {
+      return res.status(400).json({ error: 'El identificador de producto no es válido.' });
+    }
+    const producto = await catalogo.eliminar(id);
     if (!producto) {
       return res.status(404).json({ error: 'Producto no encontrado.' });
     }
@@ -119,13 +190,14 @@ router.delete('/productos/:id', async (req, res, next) => {
 router.post('/cambiar-contrasena', async (req, res, next) => {
   try {
     const { nueva } = req.body || {};
-    if (!nueva) {
+    if (!nueva || typeof nueva !== 'string') {
       return res.status(400).json({ error: 'Falta la contraseña nueva.' });
     }
     // FALLA: no se valida la longitud ni la complejidad de la contraseña.
     // (`req.usuario!`: requiereSesion ya garantizó que hay un usuario.)
-    const usuario = await usuarios.cambiarPassword(req.usuario!.id, nueva);
-    res.json({ mensaje: 'Contraseña actualizada.', usuario });
+    await usuarios.cambiarPassword(req.usuario!.id, nueva);
+    // No se devuelve el usuario: la respuesta incluía la contraseña.
+    res.json({ mensaje: 'Contraseña actualizada.' });
   } catch (err) {
     next(err);
   }
