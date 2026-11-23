@@ -187,7 +187,11 @@
               cuando el proveedor cambia de servidor.</p>
             <form id="form-conexion" novalidate>
               <label class="field"><span>Servidor del proveedor</span>
-                <input type="text" id="conexion-host" placeholder="proveedor.origen.com">
+                <select id="conexion-host">
+                  <option value="db">db (base de datos)</option>
+                  <option value="localhost">localhost</option>
+                  <option value="127.0.0.1">127.0.0.1</option>
+                </select>
               </label>
               <button type="submit" class="btn btn-primary">Probar conexión</button>
             </form>

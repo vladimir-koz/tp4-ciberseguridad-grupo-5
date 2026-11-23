@@ -1,7 +1,7 @@
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 
 import config from '../config';
 import * as catalogo from '../services/catalogo.service';
@@ -204,33 +204,54 @@ router.post('/cambiar-contrasena', async (req, res, next) => {
 });
 
 /**
+ * Servidores que se pueden probar desde el panel (lista blanca).
+ * Sólo destinos propios del entorno: nunca se hace ping a sistemas ajenos.
+ * Para agregar un proveedor real, sumarlo acá (y al <select> de admin.html).
+ */
+const HOSTS_PERMITIDOS: readonly string[] = ['db', 'localhost', '127.0.0.1'];
+
+/** Límites del proceso de ping. */
+const PING_PAQUETES = '3';
+const PING_ESPERA_SEGUNDOS = '2';
+const PING_TIMEOUT_MS = 10_000;
+const PING_SALIDA_MAX = 64 * 1024;
+
+/**
  * POST /api/admin/probar-conexion
  *
- * -----------------------------------------------------------------------------
- * FALLA — Inyección de comandos del sistema operativo (OWASP A03:2021)
- * -----------------------------------------------------------------------------
- * La dirección del proveedor se mete dentro de una cadena de shell.
- * Como `exec` launches /bin/sh -c, los operadores del shell (|, ;, &&, $())
- * se interpretan y permiten ejecutar comandos arbitrarios en el contenedor.
- *
- * Corrección: validar el host contra una LISTA BLANCA y ejecutar el proceso
- * con `spawn('ping', ['-c', '3', host], { shell: false })`, sin pasar por el
- * shell.
- * -----------------------------------------------------------------------------
+ * Inyección de comandos (OWASP A03:2021). Defensas:
+ *  1. El host se valida contra una LISTA BLANCA: cualquier otro valor
+ *     (incluidos `;`, `&&`, `|`, `$()`) se rechaza antes de ejecutar nada.
+ *  2. `ping` se ejecuta con execFile, con los argumentos en un array y
+ *     `shell: false`: no hay /bin/sh que interprete operadores, así que el
+ *     host es siempre UN argumento de ping y nunca un comando nuevo.
+ *  3. El proceso tiene tiempo y salida acotados.
  */
 router.post('/probar-conexion', (req, res) => {
   const { host } = req.body || {};
+  const destino = typeof host === 'string' ? host.trim().toLowerCase() : '';
 
-  // FALLA: entrada de usuario concatenada en un comando de shell.
-  const comando = `ping -c 3 ${host}`;
-
-  exec(comando, (error, stdout, stderr) => {
-    res.json({
-      comando,
-      salida: stdout,
-      error: stderr || (error ? error.message : null),
+  if (!HOSTS_PERMITIDOS.includes(destino)) {
+    return res.status(400).json({
+      error: 'Servidor no permitido. Elegí uno de la lista de servidores habilitados.',
     });
-  });
+  }
+
+  const argumentos = ['-c', PING_PAQUETES, '-W', PING_ESPERA_SEGUNDOS, destino];
+
+  execFile(
+    'ping',
+    argumentos,
+    { shell: false, timeout: PING_TIMEOUT_MS, maxBuffer: PING_SALIDA_MAX },
+    (error, stdout, stderr) => {
+      res.json({
+        // Sólo para mostrar en el panel: NO se ejecuta como texto de shell.
+        comando: ['ping', ...argumentos].join(' '),
+        salida: stdout,
+        error: stderr || (error ? 'El servidor no respondió al ping.' : null),
+      });
+    }
+  );
 });
 
 /**
