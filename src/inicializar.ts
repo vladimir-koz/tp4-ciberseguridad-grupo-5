@@ -1,3 +1,4 @@
+import bcrypt from 'bcryptjs';
 import * as db from './db';
 import { CATALOGO } from './catalogo';
 import type { Rol } from './tipos';
@@ -12,10 +13,9 @@ interface UsuarioInicial {
 /**
  * Carga los datos iniciales (usuarios y catálogo) si la base está vacía.
  *
- * FALLA — Almacenamiento inseguro de credenciales:
- * las contraseñas de los usuarios se guardan en TEXTO PLANO.
- * La corrección es hashear con bcrypt + salt por usuario
- * (bcryptjs ya está instalado como dependencia del proyecto).
+ * Las contraseñas de los usuarios se guardan como hash bcrypt (con salt
+ * incluido), nunca en texto plano. Las contraseñas de abajo son solo las
+ * credenciales de prueba del TP: lo que llega a la base es el hash.
  */
 
 export const USUARIOS_INICIALES: UsuarioInicial[] = [
@@ -54,12 +54,12 @@ export const USUARIOS_INICIALES: UsuarioInicial[] = [
 export async function inicializarBase(): Promise<void> {
   // --- Usuarios -------------------------------------------------------------
   for (const usuario of USUARIOS_INICIALES) {
-    // FALLA: la contraseña se guarda tal cual, sin hash ni salt.
+    const hash = await bcrypt.hash(usuario.password, 10);
     await db.query(
       `INSERT INTO usuarios (username, password, rol, nombre)
        VALUES ($1, $2, $3, $4)
        ON CONFLICT (username) DO NOTHING`,
-      [usuario.username, usuario.password, usuario.rol, usuario.nombre]
+      [usuario.username, hash, usuario.rol, usuario.nombre]
     );
   }
 

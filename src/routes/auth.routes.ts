@@ -1,21 +1,31 @@
 import express from 'express';
+import rateLimit from 'express-rate-limit';
 import * as usuarios from '../services/usuarios.service';
 import { crearSesion, destruirSesion, obtenerSesion } from '../middleware/sesion';
 
 const router = express.Router();
 
 /**
+ * Límite de intentos de login fallidos (fuerza bruta):
+ * máximo 5 intentos fallidos por IP cada 15 minutos.
+ * Los logins correctos no cuentan. Al superar el límite responde 429.
+ */
+const limitadorLogin = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 5,
+  skipSuccessfulRequests: true,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiados intentos fallidos. Probá de nuevo en unos minutos.' },
+});
+
+/**
  * Inicio de sesión.
  *
- * FALLAS:
- *  - Inyección SQL en la verificación de credenciales (ver usuarios.service).
- *  - Contraseñas almacenadas en texto plano.
- *  - Mensajes de error que distinguen "usuario inexistente" de "contraseña
- *    incorrecta" → enumeración de usuarios.
- *  - Sin rate limiting ni bloqueo: fuerza bruta ilimitada.
+ * Pendiente de otras correcciones del TP:
  *  - El identificador de sesión no se regenera (fijación de sesión).
  */
-router.post('/login', async (req, res, next) => {
+router.post('/login', limitadorLogin, async (req, res, next) => {
   try {
     const { username, password } = req.body || {};
 
@@ -23,20 +33,12 @@ router.post('/login', async (req, res, next) => {
       return res.status(400).json({ error: 'Falta usuario o contraseña.' });
     }
 
-    // La verificación de credenciales es la consulta concatenada (SQLi).
     const usuario = await usuarios.autenticar(username, password);
 
     if (!usuario) {
-      // FALLA — Enumeración de usuarios: el mensaje distingue entre
-      // "no existe" y "contraseña incorrecta", lo que permite a un atacante
-      // averiguar qué cuentas hay en el sistema.
-      const existe = await usuarios.buscarPorUsername(username);
-      if (existe) {
-        return res.status(401).json({ error: 'La contraseña es incorrecta.' });
-      }
-      return res
-        .status(401)
-        .json({ error: `El usuario "${username}" no existe en el sistema.` });
+      // Mismo estado y mismo mensaje para "no existe" y "clave incorrecta":
+      // no se puede averiguar qué cuentas existen, y no se refleja la entrada.
+      return res.status(401).json({ error: 'Usuario o contraseña incorrectos.' });
     }
 
     crearSesion(req, res, {
@@ -65,6 +67,7 @@ router.post('/login', async (req, res, next) => {
  *
  * FALLA: sólo borra la cookie del navegador. La sesión sigue existiendo en el
  * servidor, así que con la cookie robada se puede seguir usando.
+ * (Corrección pendiente: la hace Jano, #16.)
  */
 router.post('/logout', (req, res) => {
   res.clearCookie('sid', { path: '/' });
