@@ -4,6 +4,7 @@ import helmet from 'helmet';
 
 import config from './config';
 import { rutaNoEncontrada, manejadorErrores } from './middleware/errores';
+import { emitirTokenCsrf, verificarCsrf } from './middleware/csrf';
 import authRoutes from './routes/auth.routes';
 import productosRoutes from './routes/productos.routes';
 import pedidosRoutes from './routes/pedidos.routes';
@@ -74,6 +75,12 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.get('/api/salud', (req, res) => {
   res.json({ ok: true, servicio: 'cafeteria-origen', hora: new Date().toISOString() });
 });
+
+// Anti-CSRF: el token se pide con GET y se exige en todo POST/PUT/PATCH/DELETE
+// de la API (ver middleware/csrf.ts). Va después de los parsers del cuerpo
+// (el token puede venir en `_csrf`) y antes de todas las rutas.
+app.get('/api/csrf-token', emitirTokenCsrf);
+app.use('/api', verificarCsrf);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/productos', productosRoutes);
