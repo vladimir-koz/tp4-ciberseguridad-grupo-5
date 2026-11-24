@@ -286,8 +286,10 @@
     postJSON('/pedidos', {
       mesa: $('#pedido-mesa').value,
       cliente: $('#pedido-cliente').value,
+      // El servidor exige enteros (validación de pedidos): el id sale de un
+      // atributo data-id o del localStorage como texto, así que se convierte.
       items: estado.carrito.map(function (item) {
-        return { productoId: item.id, cantidad: item.cantidad };
+        return { productoId: Number(item.id), cantidad: Number(item.cantidad) };
       }),
     }).then(function (resp) {
       if (!resp.ok) {
@@ -387,7 +389,7 @@
     $('#productos-grid').addEventListener('click', function (e) {
       var btn = e.target.closest('.btn-agregar');
       if (!btn) return;
-      agregarAlCarrito(btn.getAttribute('data-id'));
+      agregarAlCarrito(Number(btn.getAttribute('data-id')));
     });
 
     $('#carrito').addEventListener('click', function (e) {
