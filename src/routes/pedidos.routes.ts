@@ -7,11 +7,10 @@ const router = express.Router();
  * POST /api/pedidos
  * Crea un pedido y devuelve su total calculado.
  *
- * FALLAS:
- *  - CSRF: no hay token anti-CSRF ni verificación de Origin/Referer, y la
- *    cookie de sesión no tiene SameSite. Una página externa puede POSTear
- *    con las cookies de la víctima.
- *  - No requiere autenticación ni rol.
+ * CSRF: exige token anti-CSRF y Origin propio (middleware/csrf.ts, aplicado
+ * a toda la API en app.ts).
+ *
+ * FALLA: no requiere autenticación ni rol.
  */
 router.post('/', async (req, res, next) => {
   try {

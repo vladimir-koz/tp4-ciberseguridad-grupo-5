@@ -1,21 +1,32 @@
+import crypto from 'crypto';
 import path from 'path';
 
 /**
  * Configuración de la aplicación.
  *
- * -----------------------------------------------------------------------------
- * FALLA 1 — Cifrado de datos y gestión de secretos (Ajustes de configuración)
- * -----------------------------------------------------------------------------
- * El secreto de sesión está escrito a mano en el código fuente.
- * Cualquiera que clone el repositorio lo conoce.
- *
- * Corrección: leer todo desde variables de entorno (ver .env.example) o desde
- * un gestor de secretos, y no versionar ningún secreto.
- * -----------------------------------------------------------------------------
+ * Gestión de secretos (Ajustes de configuración): los secretos se leen de
+ * variables de entorno (ver .env.example) y no se versiona ninguno. Antes el
+ * secreto de sesión estaba escrito a mano en este archivo y cualquiera que
+ * clonara el repositorio lo conocía.
  */
 const dbPassword = process.env.DB_PASSWORD;
 if (!dbPassword) {
   throw new Error('Falta configurar DB_PASSWORD.');
+}
+
+/**
+ * Secreto con el que se firman los tokens anti-CSRF.
+ *
+ * Se lee de SESSION_SECRET (nunca está escrito en el código). Si no se
+ * configura, se genera uno aleatorio en cada arranque: alcanza para esta app,
+ * porque las sesiones viven en memoria y también se pierden al reiniciar.
+ * Con varias instancias detrás de un balanceador hay que definirlo en el
+ * entorno, igual en todas.
+ */
+const SECRETO_LONGITUD_MINIMA = 32;
+const secretoSesion = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+if (secretoSesion.length < SECRETO_LONGITUD_MINIMA) {
+  throw new Error('SESSION_SECRET debe tener al menos 32 caracteres.');
 }
 
 export default {
@@ -30,9 +41,8 @@ export default {
     password: dbPassword,
   },
 
-  // FALLA: secreto fijo y predecible, escrito en el código.
-  // Se necesita para firmar el token anti-CSRF (corrección del CSRF).
-  sessionSecret: 'origen-cafe-2024',
+  // Firma del token anti-CSRF: viene del entorno o es aleatorio por arranque.
+  sessionSecret: secretoSesion,
 
   // FALLA: credenciales por defecto que nunca se cambian.
   credencialesPorDefecto: {

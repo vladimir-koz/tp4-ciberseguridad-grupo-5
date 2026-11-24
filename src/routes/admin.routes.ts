@@ -163,8 +163,8 @@ router.put('/productos/:id', async (req, res, next) => {
 /**
  * DELETE /api/admin/productos/:id
  *
- * FALLA — CSRF: la petición que borra un producto no lleva ningún token y se
- * acepta con un simple GET/POST desde cualquier origen.
+ * CSRF: como toda operación que cambia estado, exige el token anti-CSRF
+ * (middleware/csrf.ts, aplicado en app.ts).
  */
 router.delete('/productos/:id', async (req, res, next) => {
   try {
@@ -185,8 +185,9 @@ router.delete('/productos/:id', async (req, res, next) => {
 /**
  * POST /api/admin/cambiar-contrasena
  *
- * FALLAS: sin token anti-CSRF, sin límite de intentos, y la contraseña nueva
- * se guarda en texto plano.
+ * Exige token anti-CSRF (middleware/csrf.ts) y la contraseña se guarda con
+ * bcrypt (usuarios.service). FALLA pendiente: sin límite de intentos ni
+ * política de longitud/complejidad.
  */
 router.post('/cambiar-contrasena', async (req, res, next) => {
   try {

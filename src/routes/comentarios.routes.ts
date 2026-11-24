@@ -48,7 +48,7 @@ router.get('/', async (req, res, next) => {
  * longitud del autor y del texto, y rango de la calificación. Los mensajes
  * de error son fijos y no reflejan la entrada.
  *
- * FALLA pendiente: sin token anti-CSRF (se corrige en el bloque de CSRF).
+ * CSRF: exige token anti-CSRF (middleware/csrf.ts, aplicado en app.ts).
  */
 router.post('/', async (req, res, next) => {
   try {

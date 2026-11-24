@@ -75,12 +75,40 @@
     });
   }
 
-  function postJSON(url, cuerpo) {
-    return api(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(cuerpo || {}),
+  /*
+   * Token anti-CSRF: se pide a GET /api/csrf-token y se manda en la cabecera
+   * X-CSRF-Token de cada petición que cambia estado. Si el servidor lo
+   * rechaza (por ejemplo porque cambió la sesión), se pide uno nuevo y se
+   * reintenta una sola vez.
+   */
+  var tokenCsrf = null;
+
+  function obtenerTokenCsrf() {
+    if (tokenCsrf) return Promise.resolve(tokenCsrf);
+    return api('/csrf-token').then(function (resp) {
+      tokenCsrf = (resp.ok && resp.data.token) || null;
+      return tokenCsrf;
     });
+  }
+
+  function enviar(metodo, url, cuerpo, esReintento) {
+    return obtenerTokenCsrf().then(function (token) {
+      return api(url, {
+        method: metodo,
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token || '' },
+        body: JSON.stringify(cuerpo || {}),
+      });
+    }).then(function (resp) {
+      if (resp.status === 403 && resp.data.codigo === 'csrf_invalido' && !esReintento) {
+        tokenCsrf = null;
+        return enviar(metodo, url, cuerpo, true);
+      }
+      return resp;
+    });
+  }
+
+  function postJSON(url, cuerpo) {
+    return enviar('POST', url, cuerpo);
   }
 
   function guardarCarrito() {
