@@ -1,7 +1,12 @@
 import express from 'express';
 import rateLimit from 'express-rate-limit';
 import * as usuarios from '../services/usuarios.service';
-import { crearSesion, destruirSesion, obtenerSesion } from '../middleware/sesion';
+import {
+  crearSesion,
+  destruirSesion,
+  limpiarCookieSesion,
+  obtenerSesion,
+} from '../middleware/sesion';
 
 const router = express.Router();
 
@@ -21,9 +26,6 @@ const limitadorLogin = rateLimit({
 
 /**
  * Inicio de sesión.
- *
- * Pendiente de otras correcciones del TP:
- *  - El identificador de sesión no se regenera (fijación de sesión).
  */
 router.post('/login', limitadorLogin, async (req, res, next) => {
   try {
@@ -65,12 +67,13 @@ router.post('/login', limitadorLogin, async (req, res, next) => {
 /**
  * Cierre de sesión.
  *
- * FALLA: sólo borra la cookie del navegador. La sesión sigue existiendo en el
- * servidor, así que con la cookie robada se puede seguir usando.
- * (Corrección pendiente: la hace Jano, #16.)
+ * Invalida la sesión EN EL SERVIDOR (la borra del almacén) y además limpia la
+ * cookie del navegador: con un `sid` robado ya no se puede seguir operando.
+ * Es idempotente: si no había sesión, responde igual.
  */
 router.post('/logout', (req, res) => {
-  res.clearCookie('sid', { path: '/' });
+  destruirSesion(req);
+  limpiarCookieSesion(res);
   res.json({ mensaje: 'Sesión cerrada.' });
 });
 
