@@ -52,6 +52,8 @@ services:
       DB_USER: origen_app
       DB_PASSWORD: "${DB_PASSWORD:?Defini DB_PASSWORD fuera del repositorio}"
       UPLOADS_DIR: /app/uploads
+      # Opcional: firma de los tokens anti-CSRF. Vacío = aleatorio por arranque.
+      SESSION_SECRET: "${SESSION_SECRET:-}"
       # Puerto publicado en el host, sólo para los mensajes de arranque.
       APP_PORT: "${APP_PORT:-8080}"
     ports:

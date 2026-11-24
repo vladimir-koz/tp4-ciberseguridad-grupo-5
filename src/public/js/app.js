@@ -22,11 +22,49 @@
     return n.toLocaleString('es-AR', { style: 'currency', currency: 'ARS' });
   }
 
-  function raw(valor) {
-    // FALLA: esta función NO escapa nada, devuelve el valor tal cual.
-    // La forma correcta de renderizar texto del servidor es escaparHtml()
-    // (o textContent en vez de innerHTML).
-    return String(valor == null ? '' : valor);
+  /*
+   * Renderizado seguro del DOM.
+   *
+   * Todo dato que viene del servidor, de la URL o del localStorage se inserta
+   * como TEXTO (textContent / nodos de texto), nunca como marcado HTML. Así,
+   * un "<script>" o un "<img onerror=...>" se muestra literalmente y el
+   * navegador no lo interpreta.
+   */
+  function agregarHijos(el, hijos) {
+    if (hijos == null) return;
+    (Array.isArray(hijos) ? hijos : [hijos]).forEach(function (hijo) {
+      if (hijo == null || hijo === false) return;
+      if (typeof hijo === 'string' || typeof hijo === 'number') {
+        el.appendChild(document.createTextNode(String(hijo)));
+      } else {
+        el.appendChild(hijo);
+      }
+    });
+  }
+
+  /**
+   * Crea un elemento. `props.text` se asigna con textContent y `props.class`
+   * con className; el resto se setea como atributo. Los atributos de eventos
+   * (on*) y `style` se ignoran: no hacen falta y abrirían una vía de XSS.
+   */
+  function h(tag, props, hijos) {
+    var el = document.createElement(tag);
+    Object.keys(props || {}).forEach(function (clave) {
+      var valor = props[clave];
+      if (valor == null || valor === false) return;
+      if (/^on/i.test(clave) || clave === 'style') return;
+      if (clave === 'text') el.textContent = String(valor);
+      else if (clave === 'class') el.className = String(valor);
+      else el.setAttribute(clave, String(valor));
+    });
+    agregarHijos(el, hijos);
+    return el;
+  }
+
+  /** Reemplaza el contenido de un elemento por los nodos indicados. */
+  function reemplazar(el, hijos) {
+    while (el.firstChild) el.removeChild(el.firstChild);
+    agregarHijos(el, hijos);
   }
 
   function api(url, opciones) {
@@ -37,12 +75,40 @@
     });
   }
 
-  function postJSON(url, cuerpo) {
-    return api(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(cuerpo || {}),
+  /*
+   * Token anti-CSRF: se pide a GET /api/csrf-token y se manda en la cabecera
+   * X-CSRF-Token de cada petición que cambia estado. Si el servidor lo
+   * rechaza (por ejemplo porque cambió la sesión), se pide uno nuevo y se
+   * reintenta una sola vez.
+   */
+  var tokenCsrf = null;
+
+  function obtenerTokenCsrf() {
+    if (tokenCsrf) return Promise.resolve(tokenCsrf);
+    return api('/csrf-token').then(function (resp) {
+      tokenCsrf = (resp.ok && resp.data.token) || null;
+      return tokenCsrf;
     });
+  }
+
+  function enviar(metodo, url, cuerpo, esReintento) {
+    return obtenerTokenCsrf().then(function (token) {
+      return api(url, {
+        method: metodo,
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token || '' },
+        body: JSON.stringify(cuerpo || {}),
+      });
+    }).then(function (resp) {
+      if (resp.status === 403 && resp.data.codigo === 'csrf_invalido' && !esReintento) {
+        tokenCsrf = null;
+        return enviar(metodo, url, cuerpo, true);
+      }
+      return resp;
+    });
+  }
+
+  function postJSON(url, cuerpo) {
+    return enviar('POST', url, cuerpo);
   }
 
   function guardarCarrito() {
@@ -53,16 +119,11 @@
 
   function cargarCarrito() {
     try {
-      return JSON.parse(localStorage.getItem(CARRITO_KEY)) || [];
+      var guardado = JSON.parse(localStorage.getItem(CARRITO_KEY));
+      return Array.isArray(guardado) ? guardado : [];
     } catch (e) {
       return [];
     }
-  }
-
-  function escaparHtml(texto) {
-    var div = document.createElement('div');
-    div.textContent = texto == null ? '' : String(texto);
-    return div.innerHTML;
   }
 
   /* ------------------------------------------------------------- catálogo */
@@ -90,51 +151,51 @@
     var grid = $('#productos-grid');
 
     if (!productos || productos.length === 0) {
-      grid.innerHTML = '<p class="empty">No encontramos productos con esos filtros.</p>';
+      reemplazar(grid, h('p', { class: 'empty', text: 'No encontramos productos con esos filtros.' }));
       return;
     }
 
-    // ---------------------------------------------------------------
-    // FALLA (XSS reflejado / almacenado): el HTML se construye con
-    // innerHTML a partir de datos que vienen del servidor (nombres de
-    // producto y texto de la búsqueda). Un "<script>" en el buscador o
-    // en el nombre de un producto se ejecuta en el navegador.
-    //
-    // Corrección: usar textContent, o escapar los valores antes de
-    // interpolarlos (ver la función escaparHtml de arriba).
-    // ---------------------------------------------------------------
-    grid.innerHTML = productos.map(function (p) {
+    // Nombres, descripciones y etiquetas vienen de la base: se insertan
+    // como texto, nunca como HTML.
+    reemplazar(grid, productos.map(function (p) {
       window.__productos[p.id] = p;
-      var tags = '<span class="tag">' + raw(p.tipo) + '</span>';
-      if (p.variedad) tags += '<span class="tag tag-origen">' + raw(p.variedad) + '</span>';
-      if (p.tamano) tags += '<span class="tag">' + raw(p.tamano) + '</span>';
 
-      return '' +
-        '<article class="product-card">' +
-        '  <div class="product-top">' +
-        '    <h3 class="product-name">' + raw(p.nombre) + '</h3>' +
-        '    <span class="product-price">' + money(p.precio) + '</span>' +
-        '  </div>' +
-        '  <div class="product-tags">' + tags + '</div>' +
-        '  <p class="product-desc">' + raw(p.descripcion) + '</p>' +
-        '  <button class="btn btn-ghost btn-agregar" data-id="' + raw(p.id) + '">Agregar</button>' +
-        '</article>';
-    }).join('');
+      var tags = [h('span', { class: 'tag', text: p.tipo })];
+      if (p.variedad) tags.push(h('span', { class: 'tag tag-origen', text: p.variedad }));
+      if (p.tamano) tags.push(h('span', { class: 'tag', text: p.tamano }));
+
+      return h('article', { class: 'product-card' }, [
+        h('div', { class: 'product-top' }, [
+          h('h3', { class: 'product-name', text: p.nombre }),
+          h('span', { class: 'product-price', text: money(p.precio) }),
+        ]),
+        h('div', { class: 'product-tags' }, tags),
+        h('p', { class: 'product-desc', text: p.descripcion }),
+        h('button', { class: 'btn btn-ghost btn-agregar', 'data-id': p.id, text: 'Agregar' }),
+      ]);
+    }));
   }
 
   function renderResultado(filtros, total) {
     var el = $('#resultado-busqueda');
 
-    // FALLA (XSS reflejado): se interpola el texto buscado con innerHTML.
+    // El texto buscado vuelve del servidor (eco de `q`): se muestra como texto.
     if (filtros && filtros.q) {
-      el.innerHTML = 'Resultados para <strong>' + filtros.q + '</strong> — ' + total + ' producto(s)';
+      reemplazar(el, [
+        'Resultados para ',
+        h('strong', { text: filtros.q }),
+        ' — ' + total + ' producto(s)',
+      ]);
     } else {
       el.textContent = total + ' producto(s) en el menú';
     }
   }
 
   function renderErrorProductos(mensaje) {
-    $('#productos-grid').innerHTML = '<p class="empty">No se pudo cargar el menú: ' + (mensaje || 'error desconocido') + '</p>';
+    reemplazar($('#productos-grid'), h('p', {
+      class: 'empty',
+      text: 'No se pudo cargar el menú: ' + (mensaje || 'error desconocido'),
+    }));
   }
 
   /* --------------------------------------------------------------- carrito */
@@ -178,37 +239,39 @@
     var total = 0;
 
     if (estado.carrito.length === 0) {
-      cont.innerHTML = '<p class="empty">El carrito está vacío.</p>';
-      lista.innerHTML = '';
+      reemplazar(cont, h('p', { class: 'empty', text: 'El carrito está vacío.' }));
+      reemplazar(lista, null);
       $('#resumen-total').textContent = money(0);
       return;
     }
 
-    cont.innerHTML = estado.carrito.map(function (item, i) {
+    // El carrito sale del localStorage, que también es entrada no confiable.
+    reemplazar(cont, estado.carrito.map(function (item, i) {
       var subtotal = item.precio * item.cantidad;
       total += subtotal;
-      return '' +
-        '<div class="cart-item">' +
-        '  <div>' +
-        '    <div class="cart-item-name">' + raw(item.nombre) + '</div>' +
-        '    <div class="cart-item-meta">' + money(item.precio) + ' c/u</div>' +
-        '  </div>' +
-        '  <div class="qty-control">' +
-        '    <button type="button" data-acc="menos" data-i="' + i + '">&minus;</button>' +
-        '    <span>' + item.cantidad + '</span>' +
-        '    <button type="button" data-acc="mas" data-i="' + i + '">+</button>' +
-        '  </div>' +
-        '  <div>' +
-        '    <div class="cart-item-price">' + money(subtotal) + '</div>' +
-        '    <button type="button" class="link-danger" data-acc="quitar" data-i="' + i + '">Quitar</button>' +
-        '  </div>' +
-        '</div>';
-    }).join('');
+      return h('div', { class: 'cart-item' }, [
+        h('div', null, [
+          h('div', { class: 'cart-item-name', text: item.nombre }),
+          h('div', { class: 'cart-item-meta', text: money(item.precio) + ' c/u' }),
+        ]),
+        h('div', { class: 'qty-control' }, [
+          h('button', { type: 'button', 'data-acc': 'menos', 'data-i': i, text: '−' }),
+          h('span', { text: item.cantidad }),
+          h('button', { type: 'button', 'data-acc': 'mas', 'data-i': i, text: '+' }),
+        ]),
+        h('div', null, [
+          h('div', { class: 'cart-item-price', text: money(subtotal) }),
+          h('button', { type: 'button', class: 'link-danger', 'data-acc': 'quitar', 'data-i': i, text: 'Quitar' }),
+        ]),
+      ]);
+    }));
 
-    lista.innerHTML = estado.carrito.map(function (item) {
-      return '<li><span>' + raw(item.nombre) + ' × ' + item.cantidad + '</span><span>' +
-        money(item.precio * item.cantidad) + '</span></li>';
-    }).join('');
+    reemplazar(lista, estado.carrito.map(function (item) {
+      return h('li', null, [
+        h('span', { text: item.nombre + ' × ' + item.cantidad }),
+        h('span', { text: money(item.precio * item.cantidad) }),
+      ]);
+    }));
 
     $('#resumen-total').textContent = money(total);
   }
@@ -223,14 +286,16 @@
     postJSON('/pedidos', {
       mesa: $('#pedido-mesa').value,
       cliente: $('#pedido-cliente').value,
+      // El servidor exige enteros (validación de pedidos): el id sale de un
+      // atributo data-id o del localStorage como texto, así que se convierte.
       items: estado.carrito.map(function (item) {
-        return { productoId: item.id, cantidad: item.cantidad };
+        return { productoId: Number(item.id), cantidad: Number(item.cantidad) };
       }),
     }).then(function (resp) {
       if (!resp.ok) {
-        // FALLA (XSS reflejado): el mensaje del servidor se pinta con innerHTML.
+        // El mensaje del servidor se muestra como texto.
         feedback.className = 'form-feedback is-error';
-        feedback.innerHTML = 'No pudimos enviar el pedido: ' + (resp.data.error || 'error desconocido');
+        feedback.textContent = 'No pudimos enviar el pedido: ' + (resp.data.error || 'error desconocido');
         return;
       }
       feedback.className = 'form-feedback is-ok';
@@ -251,24 +316,23 @@
     return api('/comentarios').then(function (resp) {
       var cont = $('#lista-resenas');
       if (!resp.ok || !resp.data.comentarios || resp.data.comentarios.length === 0) {
-        cont.innerHTML = '<p class="empty">Todavía no hay reseñas. ¡Sé el primero!</p>';
+        reemplazar(cont, h('p', { class: 'empty', text: 'Todavía no hay reseñas. ¡Sé el primero!' }));
         return;
       }
-      // FALLA (XSS almacenado): el texto de la reseña viene de la base y se
-      // inyecta con innerHTML → se ejecuta en el navegador de cada visitante.
-      cont.innerHTML = resp.data.comentarios.map(function (c) {
+      // Las reseñas vienen de la base (las escribió cualquier visitante):
+      // se muestran como texto inerte.
+      reemplazar(cont, resp.data.comentarios.map(function (c) {
         var estrellas = '';
-        var i;
-        for (i = 0; i < Number(c.calificacion || 0); i++) estrellas += '★';
-        return '' +
-          '<article class="review">' +
-          '  <div class="review-head">' +
-          '    <span class="review-author">' + raw(c.autor) + '</span>' +
-          '    <span class="review-stars">' + estrellas + '</span>' +
-          '  </div>' +
-          '  <p class="review-text">' + raw(c.texto) + '</p>' +
-          '</article>';
-      }).join('');
+        var cantidad = Math.max(0, Math.min(5, Math.floor(Number(c.calificacion) || 0)));
+        for (var i = 0; i < cantidad; i++) estrellas += '★';
+        return h('article', { class: 'review' }, [
+          h('div', { class: 'review-head' }, [
+            h('span', { class: 'review-author', text: c.autor }),
+            h('span', { class: 'review-stars', text: estrellas }),
+          ]),
+          h('p', { class: 'review-text', text: c.texto }),
+        ]);
+      }));
     });
   }
 
@@ -285,7 +349,7 @@
     }).then(function (resp) {
       if (!resp.ok) {
         feedback.className = 'form-feedback is-error';
-        feedback.innerHTML = 'No se pudo publicar: ' + (resp.data.error || 'error desconocido');
+        feedback.textContent = 'No se pudo publicar: ' + (resp.data.error || 'error desconocido');
         return;
       }
       feedback.className = 'form-feedback is-ok';
@@ -325,7 +389,7 @@
     $('#productos-grid').addEventListener('click', function (e) {
       var btn = e.target.closest('.btn-agregar');
       if (!btn) return;
-      agregarAlCarrito(btn.getAttribute('data-id'));
+      agregarAlCarrito(Number(btn.getAttribute('data-id')));
     });
 
     $('#carrito').addEventListener('click', function (e) {

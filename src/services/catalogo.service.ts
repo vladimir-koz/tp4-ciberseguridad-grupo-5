@@ -49,9 +49,10 @@ export async function listar(filtros: FiltrosCatalogo = {}): Promise<ProductoCon
   }
 
   if (q) {
+    // El texto buscado viaja como valor; en el SQL sólo va el marcador
+    // posicional, que se reutiliza para las dos columnas.
     valores.push(`%${q}%`);
-    const parametro = `$${valores.length}`;
-    condiciones.push(`(nombre ILIKE ${parametro} OR descripcion ILIKE ${parametro})`);
+    condiciones.push(`(nombre ILIKE $${valores.length} OR descripcion ILIKE $${valores.length})`);
   }
 
   const sql = `SELECT * FROM productos WHERE ${condiciones.join(' AND ')} ORDER BY tipo, variedad NULLS FIRST, id`;
